@@ -1,4 +1,6 @@
-﻿namespace BetterDiscordAutoInstaller.Models;
+﻿using BetterDiscordAutoInstaller.Helper;
+
+namespace BetterDiscordAutoInstaller.Models;
 
 public class PluginInfo
 {
@@ -15,5 +17,16 @@ public class PluginInfo
         Name = fileName.Replace(".plugin.js", "", StringComparison.OrdinalIgnoreCase);
     }
 
-    public bool IsInstalled() => File.Exists(SavePath);
+    /// <summary>
+    /// 取得目前本地已安裝的版本號
+    /// </summary>
+    public string? GetInstalledVersion()
+    {
+        return PluginHeaderParser.ExtractVersionFromFile(SavePath);
+    }
+
+    /// <summary>
+    /// 判斷檔案是否存在
+    /// </summary>
+    public bool FileExists => File.Exists(SavePath);
 }
