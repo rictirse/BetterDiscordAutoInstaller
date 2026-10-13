@@ -44,11 +44,24 @@ public class BetterDiscordService
             throw new DirectoryNotFoundException("No discord_desktop_core folder found.");
 
         var indexJs = Path.Combine(coreDirs[0], "discord_desktop_core", "index.js");
-        var lines = File.ReadAllLines(indexJs).ToList();
-
         var requireLine = GetRequireLine(isCi).Trim();
         var otherRequireLine = GetRequireLine(!isCi).Trim();
 
+        // 情況 A：如果 index.js 還不存在（乾淨的 Discord），自動建立並寫入預設載入檔
+        if (!File.Exists(indexJs))
+        {
+            var initialLines = new List<string>
+        {
+            requireLine,
+            "module.exports = require('./core.asar');"
+        };
+            File.WriteAllLines(indexJs, initialLines);
+            Console.WriteLine($"[INFO] Created and patched {indexJs}");
+            return;
+        }
+
+        // 情況 B：如果 index.js 已經存在，執行替換/更新邏輯
+        var lines = File.ReadAllLines(indexJs).ToList();
         lines.RemoveAll(l => l.Trim() == otherRequireLine);
 
         if (!lines.Any(l => l.Trim() == requireLine))

@@ -259,62 +259,40 @@ internal class Program
             // 檢查本地是否缺少套件或是需要更新
             bool needsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin);
 
-            if (ifDiscordRunning)
+            // 需要更新
+            if (needsUpdate)
             {
-                // ==========================================
-                // 情境 A：Discord 目前正在執行中
-                // ==========================================
-                if (needsUpdate)
-                {
-                    Console.WriteLine($"[INFO] Plugin update detected for {defaultPlugin.Name}. Closing Discord to apply update...");
-
+                // Discord 目前正在執行中
+                if (ifDiscordRunning)
+                { 
                     // 1. 先關閉 Discord，避免檔案鎖定或無效寫入
+                    Console.WriteLine($"[INFO] Plugin update detected for {defaultPlugin.Name}. Closing Discord to apply update...");
                     discordService.KillDiscord(edition);
-
-                    // 2. 下載 / 更新套件
-                    await pluginService.DownloadPluginAsync(defaultPlugin);
-
-                    // 3. 更新完後重啟 Discord
-                    if (edition.ToString() == configService.Config.RerunDiscordEdition)
-                    {
-                        Console.WriteLine($"Restarting {edition}...");
-                        discordService.StartDiscord(edition, parentPath!);
-                    }
                 }
                 else
                 {
-                    // 已經是最新版，且 Discord 本來就在運作，直接跳過、不打擾使用者
-                    Console.WriteLine($"BetterDiscord ({edition}) is up to date. No restart needed.");
+                    Console.WriteLine($"[INFO] Plugin update detected for {defaultPlugin.Name}. Closing Discord to apply update...");
                 }
+
+                // 2. 下載 / 更新套件
+                await pluginService.DownloadPluginAsync(defaultPlugin);
+
+                // 3. 更新完後重啟 Discord
+                Console.WriteLine($"Restarting {edition}...");
+                discordService.StartDiscord(edition, parentPath!);
             }
             else
             {
-                // === 情境 B：Discord 目前還開著的流程 ===
-                if (needsUpdate)
-                {
-                    Console.WriteLine($"[INFO] Plugin update detected. Closing {edition} to apply update...");
-
-                    // 1. 先關閉 Discord
-                    discordService.KillDiscord(edition);
-
-                    // 2. 下載 / 更新套件
-                    await pluginService.DownloadPluginAsync(defaultPlugin);
-
-                    // 3. 更新完成後重新啟動 Discord
-                    Console.WriteLine($"Restarting {edition}...");
-                    discordService.StartDiscord(edition, parentPath!);
-                }
-                else
-                {
-                    Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
-                }
+                // 已經是最新版，且 Discord 本來就在運作，直接跳過、不打擾使用者
+                Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
+                return;
             }
         }
 
         Console.WriteLine(_isZh
             ? "\n安裝完成。3 秒後自動退出..."
             : "\nInstallation complete. Exiting in 3 seconds...");
-
+        await Task.Delay(3000);
     }
 
     /// <summary>
