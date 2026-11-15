@@ -63,6 +63,8 @@ BetterDiscordAutoInstaller.exe 3
 3. Run the executable and choose **Option 1** to enable auto-updates on Windows startup.
 4. The app will generate a Windows Startup shortcut configured with parameter `3` to keep BetterDiscord silently updated every time you boot your PC.
 
+The console window closes a few seconds after the startup run. To see what happened, open `%LocalAppData%\BetterDiscordAutoInstaller\logs\BetterDiscordAutoInstaller.log`. Every run appends its output to this file. When the file grows past 1 MB, the old content is renamed to `BetterDiscordAutoInstaller.log.1`.
+
 ---
 
 ## macOS

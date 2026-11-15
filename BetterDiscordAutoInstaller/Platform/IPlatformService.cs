@@ -84,4 +84,7 @@ public interface IPlatformService
 
     /// <summary>程式啟動時調整工作目錄（settings.json 以相對路徑存放）</summary>
     void PrepareWorkingDirectory();
+
+    /// <summary>本工具執行紀錄檔的完整路徑；不需要時回傳 null（macOS 由 LaunchAgent 記錄開機執行的輸出）</summary>
+    string? RunLogPath { get; }
 }

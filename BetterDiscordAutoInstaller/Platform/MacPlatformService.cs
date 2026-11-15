@@ -400,6 +400,9 @@ public sealed class MacPlatformService : IPlatformService
         }
     }
 
+    // LaunchAgent 已把登入時執行的輸出導到 AutostartLogPath，不需要另外記錄
+    public string? RunLogPath => null;
+
     /// <summary>
     /// 自己這支程式的啟動指令。用 "dotnet BetterDiscordAutoInstaller.dll" 執行時 ProcessPath 是 dotnet，要把 dll 一起帶上
     /// </summary>

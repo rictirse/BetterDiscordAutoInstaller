@@ -317,4 +317,7 @@ public sealed class WindowsPlatformService : IPlatformService
     public void PrepareWorkingDirectory()
     {
     }
+
+    // 開機自動執行時主控台視窗幾秒後就關閉，輸出另外記一份（見 RunLog）
+    public string? RunLogPath => Path.Combine(LocalAppData, "BetterDiscordAutoInstaller", "logs", "BetterDiscordAutoInstaller.log");
 }

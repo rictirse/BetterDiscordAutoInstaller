@@ -24,6 +24,7 @@ internal class Program
 
         var platform = PlatformService.Current;
         platform.PrepareWorkingDirectory();
+        using var runLog = RunLog.Start(platform.RunLogPath, args);
 
         // 如果啟動參數包含 "3" 或 "-3" 或 "--auto"，直接執行自動更新流程
         if (args.Length > 0 && (args[0] == "3" || args[0] == "-3" || args[0] == "--auto"))
