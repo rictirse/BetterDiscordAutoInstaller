@@ -33,58 +33,21 @@ public sealed class WindowsPlatformService : IPlatformService
 
     public string GetDefaultDiscordPath(DiscordEdition edition) => Path.Combine(LocalAppData, edition.ToString());
 
-    public string GetHostPath(string installPath) => Path.Combine(installPath, GetLatestInstalledDiscordFolder(installPath));
+    public string GetHostPath(string installPath) => Path.Combine(installPath, DiscordHostLayout.GetLatestInstalledDiscordFolder(installPath));
 
-    public string GetHostVersionLabel(string installPath) => GetLatestInstalledDiscordFolder(installPath);
+    public string GetHostVersionLabel(string installPath) => DiscordHostLayout.GetLatestInstalledDiscordFolder(installPath);
 
     // 取得本地最新 app-x.x.x 資料夾並去頭（如 app-1.0.9180 -> 1.0.9180）
-    public Version? GetInstalledVersion(string installPath) => ParseAppFolderVersion(GetLatestInstalledDiscordFolder(installPath));
+    public Version? GetInstalledVersion(string installPath) => ParseAppFolderVersion(DiscordHostLayout.GetLatestInstalledDiscordFolder(installPath));
 
     public string GetResourcesPath(string hostPath) => Path.Combine(hostPath, "resources");
 
     /// <summary>
     /// 取得 discord_desktop_core 模組資料夾；有多個版本時取編號最大的（Discord 載入的那一個）
     /// </summary>
-    public string? FindDesktopCoreDir(string hostPath)
-    {
-        var modulesPath = Path.Combine(hostPath, "modules");
-        if (!Directory.Exists(modulesPath)) return null;
+    public string? FindDesktopCoreDir(string hostPath) => DiscordHostLayout.FindDesktopCoreDir(hostPath);
 
-        const string prefix = "discord_desktop_core-";
-        var latest = Directory.GetDirectories(modulesPath, prefix + "*")
-            .Select(dir => (Dir: dir, Num: int.TryParse(Path.GetFileName(dir)[prefix.Length..], out var n) ? n : -1))
-            .OrderBy(x => x.Num)
-            .LastOrDefault();
-
-        return latest.Dir == null ? null : Path.Combine(latest.Dir, "discord_desktop_core");
-    }
-
-    private static string GetLatestInstalledDiscordFolder(string parentPath)
-    {
-        if (!Directory.Exists(parentPath))
-            throw new DirectoryNotFoundException($"Discord path not found: {parentPath}");
-
-        // 只會比對 "app-*"，不會抓到更新中的 ".app-x.x.x.installing"
-        var appDirs = Directory.GetDirectories(parentPath, "app-*")
-                               .Select(Path.GetFileName)
-                               .OfType<string>()
-                               .ToList();
-
-        if (appDirs.Count == 0)
-            throw new DirectoryNotFoundException($"No 'app-*' folder found in: {parentPath}");
-
-        // 依版本號排序；字串排序會讓 app-1.0.10000 排在 app-1.0.9999 前面
-        return appDirs
-            .OrderBy(name => ParseAppFolderVersion(name) ?? new Version(0, 0))
-            .ThenBy(name => name, StringComparer.OrdinalIgnoreCase)
-            .Last();
-    }
-
-    public static Version? ParseAppFolderVersion(string folderName)
-    {
-        var versionPart = folderName.StartsWith("app-", StringComparison.OrdinalIgnoreCase) ? folderName[4..] : folderName;
-        return Version.TryParse(versionPart, out var version) ? version : null;
-    }
+    public static Version? ParseAppFolderVersion(string folderName) => DiscordHostLayout.ParseAppFolderVersion(folderName);
 
     public string GetProcessName(DiscordEdition edition) => edition.ToString();
 
@@ -107,7 +70,7 @@ public sealed class WindowsPlatformService : IPlatformService
 
         try
         {
-            var appExe = Path.Combine(parentPath, GetLatestInstalledDiscordFolder(parentPath), exeName);
+            var appExe = Path.Combine(parentPath, DiscordHostLayout.GetLatestInstalledDiscordFolder(parentPath), exeName);
             if (File.Exists(appExe)) candidates.Add((appExe, ""));
         }
         catch
@@ -152,7 +115,7 @@ public sealed class WindowsPlatformService : IPlatformService
     public bool StartDiscordLikeAutoStart(DiscordEdition edition, string parentPath)
     {
         var autoStart = DiscordAutoStart.Find(edition);
-        if (autoStart != null && IsInsideDirectory(autoStart.FileName, parentPath) && File.Exists(autoStart.FileName))
+        if (autoStart != null && DiscordHostLayout.IsInsideDirectory(autoStart.FileName, parentPath) && File.Exists(autoStart.FileName))
         {
             try
             {
@@ -173,20 +136,6 @@ public sealed class WindowsPlatformService : IPlatformService
         }
 
         return StartDiscord(edition, parentPath);
-    }
-
-    private static bool IsInsideDirectory(string file, string directory)
-    {
-        try
-        {
-            var fullFile = Path.GetFullPath(file);
-            var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
-            return fullFile.StartsWith(root, StringComparison.OrdinalIgnoreCase);
-        }
-        catch
-        {
-            return false;
-        }
     }
 
     private static string GetLogFilePath(DiscordEdition edition)

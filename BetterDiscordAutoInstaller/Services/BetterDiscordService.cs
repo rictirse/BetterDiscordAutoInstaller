@@ -33,7 +33,8 @@ public class BetterDiscordService
         _platform = platform;
     }
 
-    public string GetAsarPath(bool isCi) => isCi ? PathUtils.BdCiAsarPath : PathUtils.BdAsarPath;
+    // 與 PathUtils.BdAsarPath / BdCiAsarPath 相同（正式執行時 _platform 就是 PlatformService.Current），測試可換成暫存目錄
+    public string GetAsarPath(bool isCi) => Path.Combine(_platform.BetterDiscordFolder, "data", isCi ? "betterdiscord-ci.asar" : "betterdiscord.asar");
 
     private string GetRequireLine(bool isCi) => $"require(\"{GetAsarPath(isCi).Replace("\\", "/")}\");";
 
@@ -53,7 +54,7 @@ public class BetterDiscordService
     /// </summary>
     public bool IsBdInjected(string discordPath, bool isCi) => IsCoreInjected(discordPath, isCi) || IsResourcesInjected(discordPath, isCi);
 
-    private bool IsCoreInjected(string discordPath, bool isCi)
+    internal bool IsCoreInjected(string discordPath, bool isCi)
     {
         var coreDir = FindDesktopCoreDir(discordPath);
         if (coreDir == null) return false;
@@ -68,7 +69,7 @@ public class BetterDiscordService
     /// BetterDiscord 1.14+ 在 Discord 結束時會自己做 "migration"：
     /// 把新版 host 的 resources\app.asar 改名為 betterdiscord.app.asar，並建立 resources\app\index.js 先載入 BD。
     /// </summary>
-    private bool IsResourcesInjected(string discordPath, bool isCi)
+    internal bool IsResourcesInjected(string discordPath, bool isCi)
     {
         var resources = _platform.GetResourcesPath(discordPath);
         var appIndexJs = Path.Combine(resources, "app", "index.js");
@@ -198,7 +199,7 @@ public class BetterDiscordService
         return changed;
     }
 
-    private static string StripBdRequireLines(string content) => BdRequireLineRegex.Replace(content, "");
+    internal static string StripBdRequireLines(string content) => BdRequireLineRegex.Replace(content, "");
 
     /// <summary>
     /// 下載最新的 betterdiscord.asar，驗證完整性後才取代本地檔案
@@ -305,7 +306,7 @@ public class BetterDiscordService
         return true;
     }
 
-    private static List<string> FindChangedFiles(Dictionary<string, string> local, Dictionary<string, string> remote)
+    internal static List<string> FindChangedFiles(Dictionary<string, string> local, Dictionary<string, string> remote)
     {
         return remote
             .Where(kv => !local.TryGetValue(kv.Key, out var hash) || !hash.Equals(kv.Value, StringComparison.OrdinalIgnoreCase))
