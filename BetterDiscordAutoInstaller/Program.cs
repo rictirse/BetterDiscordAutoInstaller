@@ -85,10 +85,14 @@ internal class Program
         public bool Unattended { get; init; }
         public bool BdNeedsDownload { get; set; }
         public bool PluginNeedsUpdate { get; set; }
+        /// <summary>這次要處理的所有 edition。betterdiscord.asar 是共用的，取代前要一起關閉（見 StopOtherEditionsForAsarAsync）</summary>
+        public required IReadOnlyDictionary<DiscordEdition, EditionState> Editions { get; init; }
     }
 
     private sealed class EditionState
     {
+        public required string ParentPath { get; init; }
+
         /// <summary>這次執行中由本工具關掉（或為了更新而開啟）Discord，結束時要確保它在執行</summary>
         public bool Relaunch { get; set; }
     }
@@ -163,17 +167,17 @@ internal class Program
             IsCi = isCi,
             Unattended = unattended,
             BdNeedsDownload = await bdService.CheckForBdUpdatesAsync(isCi),
-            PluginNeedsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin)
+            PluginNeedsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin),
+            Editions = installedEditions.ToDictionary(x => x.Key, x => new EditionState { ParentPath = x.Value! })
         };
 
-        foreach (var (edition, parentPath) in installedEditions)
+        foreach (var (edition, state) in ctx.Editions)
         {
-            Console.WriteLine($"\nProcessing {edition} installation: {parentPath!}");
-            var state = new EditionState();
+            Console.WriteLine($"\nProcessing {edition} installation: {state.ParentPath}");
 
             try
             {
-                await ProcessEditionAsync(ctx, edition, parentPath!, state);
+                await ProcessEditionAsync(ctx, edition, state.ParentPath, state);
             }
             catch (Exception ex)
             {
@@ -182,15 +186,26 @@ internal class Program
             finally
             {
                 // 不論成功、失敗或中途例外，都要確保 Discord 回到該有的狀態
-                try
-                {
-                    await EnsureDiscordRunningAsync(ctx, edition, parentPath!, state);
-                }
-                catch (Exception ex)
-                {
-                    Console.WriteLine($"[ERROR] Failed to start {edition}: {ex.Message}");
-                }
+                await TryEnsureDiscordRunningAsync(ctx, edition, state);
             }
+        }
+
+        // 取代共用的 asar 時，可能關掉了已經處理完的 edition：最後再確認一次所有被關掉的都已重開
+        foreach (var (edition, state) in ctx.Editions)
+        {
+            if (state.Relaunch) await TryEnsureDiscordRunningAsync(ctx, edition, state);
+        }
+    }
+
+    private static async Task TryEnsureDiscordRunningAsync(UpdateContext ctx, DiscordEdition edition, EditionState state)
+    {
+        try
+        {
+            await EnsureDiscordRunningAsync(ctx, edition, state.ParentPath, state);
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[ERROR] Failed to start {edition}: {ex.Message}");
         }
     }
 
@@ -295,6 +310,7 @@ internal class Program
 
         if (ctx.BdNeedsDownload)
         {
+            await StopOtherEditionsForAsarAsync(ctx, edition);
             Console.WriteLine("Updating BetterDiscord asar...");
             if (await bd.UpdateBdAsarOnlyAsync(ctx.IsCi)) ctx.BdNeedsDownload = false;
         }
@@ -368,6 +384,45 @@ internal class Program
         Console.WriteLine($"\nClosing {edition}...");
         state.Relaunch = true;
         await ctx.Discord.KillDiscordAsync(edition);
+    }
+
+    /// <summary>
+    /// betterdiscord.asar 是所有 edition 共用的。Windows 上開著的 asar 會被鎖住，只關閉目前這個 edition 時，
+    /// 另一個 edition 還開著就會取代失敗。所以取代前先關閉其他正在執行的 edition（結束時會重開）。
+    /// 條件和步驟 2 一樣：本工具會注入的平台一律關閉，否則只關閉有載入 BD 的。
+    /// updater 正在忙的 edition 不關閉，避免更新到一半被砍掉；這次取代可能失敗（原子寫入會保留舊檔），下次執行再試。
+    /// </summary>
+    private static async Task StopOtherEditionsForAsarAsync(UpdateContext ctx, DiscordEdition current)
+    {
+        foreach (var (edition, state) in ctx.Editions)
+        {
+            if (edition == current || !ctx.Discord.IsDiscordRunning(edition)) continue;
+
+            string? busyReason = ctx.Platform.GetUpdaterBusyReason(edition, state.ParentPath);
+            if (busyReason != null)
+            {
+                Console.WriteLine($"[WARN] {edition} is updating ({busyReason}). Leaving it open; the shared BetterDiscord asar may not be replaced this time.");
+                continue;
+            }
+
+            if (!ctx.Platform.CanInjectBetterDiscord && !HasBdLoader(ctx, state.ParentPath)) continue;
+
+            Console.WriteLine($"{edition} also uses the shared BetterDiscord asar.");
+            await StopDiscordAsync(ctx, edition, state);
+        }
+    }
+
+    private static bool HasBdLoader(UpdateContext ctx, string parentPath)
+    {
+        try
+        {
+            return ctx.Bd.HasBdLoader(ctx.Discord.GetHostPath(parentPath));
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"[WARN] Could not check BetterDiscord in {parentPath}: {ex.Message}");
+            return false;
+        }
     }
 
     private static void RememberPatchedVersion(UpdateContext ctx, DiscordEdition edition, string hostVersion)
