@@ -1,4 +1,5 @@
 ﻿using BetterDiscordAutoInstaller.Helper;
+using BetterDiscordAutoInstaller.Utils;
 
 namespace BetterDiscordAutoInstaller.Models;
 
@@ -12,8 +13,8 @@ public class PluginInfo
     {
         Url = url;
         var fileName = Path.GetFileName(url);
-        var appData = Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData);
-        SavePath = Path.Combine(appData, "BetterDiscord", "plugins", fileName);
+        // macOS 的 SpecialFolder.ApplicationData 是 ~/.config，BetterDiscord 資料夾位置交給 PathUtils（依平台決定）
+        SavePath = Path.Combine(PathUtils.BdPluginsPath, fileName);
         Name = fileName.Replace(".plugin.js", "", StringComparison.OrdinalIgnoreCase);
     }
 

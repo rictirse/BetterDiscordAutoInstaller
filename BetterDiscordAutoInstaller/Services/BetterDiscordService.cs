@@ -1,4 +1,5 @@
 ﻿using BetterDiscordAutoInstaller.Models;
+using BetterDiscordAutoInstaller.Platform;
 using BetterDiscordAutoInstaller.Utils;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -22,12 +23,14 @@ public class BetterDiscordService
     private readonly HttpClient _http = new() { Timeout = TimeSpan.FromMinutes(2) };
     private readonly ConfigService _configService;
     private readonly GitHubService _gitHubService;
+    private readonly IPlatformService _platform;
     private Dictionary<string, string>? _remoteChecksums;
 
-    public BetterDiscordService(ConfigService configService, GitHubService gitHubService)
+    public BetterDiscordService(ConfigService configService, GitHubService gitHubService, IPlatformService platform)
     {
         _configService = configService;
         _gitHubService = gitHubService;
+        _platform = platform;
     }
 
     public string GetAsarPath(bool isCi) => isCi ? PathUtils.BdCiAsarPath : PathUtils.BdAsarPath;
@@ -40,21 +43,9 @@ public class BetterDiscordService
     public bool IsAsarValid(bool isCi) => AsarArchive.TryComputeFileHashes(GetAsarPath(isCi)) != null;
 
     /// <summary>
-    /// 取得 discord_desktop_core 模組資料夾；有多個版本時取編號最大的（Discord 載入的那一個）
+    /// 取得 discord_desktop_core 模組資料夾（位置依平台而定，見 IPlatformService.FindDesktopCoreDir）
     /// </summary>
-    private static string? FindDesktopCoreDir(string discordPath)
-    {
-        var modulesPath = Path.Combine(discordPath, "modules");
-        if (!Directory.Exists(modulesPath)) return null;
-
-        const string prefix = "discord_desktop_core-";
-        var latest = Directory.GetDirectories(modulesPath, prefix + "*")
-            .Select(dir => (Dir: dir, Num: int.TryParse(Path.GetFileName(dir)[prefix.Length..], out var n) ? n : -1))
-            .OrderBy(x => x.Num)
-            .LastOrDefault();
-
-        return latest.Dir == null ? null : Path.Combine(latest.Dir, "discord_desktop_core");
-    }
+    private string? FindDesktopCoreDir(string discordPath) => _platform.FindDesktopCoreDir(discordPath);
 
     /// <summary>
     /// BetterDiscord 是否會在這個 Discord host 啟動時被載入。
@@ -79,7 +70,7 @@ public class BetterDiscordService
     /// </summary>
     private bool IsResourcesInjected(string discordPath, bool isCi)
     {
-        var resources = Path.Combine(discordPath, "resources");
+        var resources = _platform.GetResourcesPath(discordPath);
         var appIndexJs = Path.Combine(resources, "app", "index.js");
         if (!File.Exists(appIndexJs) || !File.Exists(Path.Combine(resources, "betterdiscord.app.asar"))) return false;
 
@@ -88,6 +79,27 @@ public class BetterDiscordService
         var asarPath = GetAsarPath(isCi).Replace('\\', '/');
         return content.Contains(asarPath + "/", StringComparison.OrdinalIgnoreCase)
             || content.Contains(asarPath + "\"", StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// resources\app\index.js 是否有任何 BetterDiscord loader（不限定 asar 路徑）。
+    /// 用在本工具不負責注入的平台（macOS）：BD 官方 Installer 的 index.js 是在執行時才組出 asar 路徑，
+    /// 無法用 IsResourcesInjected 的路徑比對判斷，這裡只確認 BD 的 loader 還在。
+    /// </summary>
+    public bool HasBdLoader(string discordPath)
+    {
+        try
+        {
+            var resources = _platform.GetResourcesPath(discordPath);
+            var appIndexJs = Path.Combine(resources, "app", "index.js");
+            return File.Exists(appIndexJs)
+                && File.Exists(Path.Combine(resources, "betterdiscord.app.asar"))
+                && File.ReadAllText(appIndexJs).Contains("betterdiscord", StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
     }
 
     /// <summary>
@@ -152,7 +164,7 @@ public class BetterDiscordService
         // 2. resources\app + betterdiscord.app.asar（BetterDiscord 自己的注入），邏輯比照 BD 內建的 revert()
         try
         {
-            var resources = Path.Combine(discordPath, "resources");
+            var resources = _platform.GetResourcesPath(discordPath);
             var bdAppAsar = Path.Combine(resources, "betterdiscord.app.asar");
             var appAsar = Path.Combine(resources, "app.asar");
             var backupAsar = Path.Combine(resources, "app.asar.backup");
