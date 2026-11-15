@@ -1,22 +1,29 @@
 ﻿using BetterDiscordAutoInstaller.Models;
+using BetterDiscordAutoInstaller.Platform;
 using BetterDiscordAutoInstaller.Services;
 using BetterDiscordAutoInstaller.Utils;
-using System.Diagnostics;
-using System.Globalization;
 
 namespace BetterDiscordAutoInstaller;
 
 internal class Program
 {
-    private static readonly string ShortcutName = "BetterDiscordAutoInstaller.lnk";
     private static bool _isZh = false;
 
     private static async Task Main(string[] args)
     {
         // 判斷系統語系是否為中文 (包含 zh-TW, zh-CN, zh-HK 等)
-        _isZh = CultureInfo.CurrentUICulture.TwoLetterISOLanguageName.Equals("zh", StringComparison.OrdinalIgnoreCase);
+        _isZh = Lang.IsZh;
 
         Console.WriteLine($"BetterDiscordAutoInstaller v{PathUtils.BdaiVersion}");
+
+        if (!PlatformService.IsSupported)
+        {
+            Console.WriteLine(_isZh ? "目前只支援 Windows 與 macOS。" : "Only Windows and macOS are supported.");
+            return;
+        }
+
+        var platform = PlatformService.Current;
+        platform.PrepareWorkingDirectory();
 
         // 如果啟動參數包含 "3" 或 "-3" 或 "--auto"，直接執行自動更新流程
         if (args.Length > 0 && (args[0] == "3" || args[0] == "-3" || args[0] == "--auto"))
@@ -30,8 +37,8 @@ internal class Program
         {
             Console.WriteLine("\n==========================================");
             Console.WriteLine(_isZh ? "請選擇要執行的功能：" : "Please select an option:");
-            Console.WriteLine(_isZh ? "1. 每次開機的時候自動啟動自動更新" : "1. Enable auto-update on Windows startup");
-            Console.WriteLine(_isZh ? "2. 解除每次開機的時候自動更新" : "2. Disable auto-update on Windows startup");
+            Console.WriteLine(platform.EnableAutostartMenuText);
+            Console.WriteLine(platform.DisableAutostartMenuText);
             Console.WriteLine(_isZh ? "3. 自動更新" : "3. Run auto-update now");
             Console.WriteLine("==========================================");
             Console.Write(_isZh ? "請輸入選項 (1-3): " : "Enter your choice (1-3): ");
@@ -44,10 +51,10 @@ internal class Program
             switch (input)
             {
                 case "1":
-                    EnableStartup();
+                    platform.EnableAutostart();
                     return;
                 case "2":
-                    DisableStartup();
+                    platform.DisableAutostart();
                     return;
                 case "3":
                     await RunAutoUpdateAsync(args);
@@ -59,86 +66,6 @@ internal class Program
         }
     }
 
-    /// <summary>
-    /// 在 Startup 資料夾建立帶有參數 3 的捷徑
-    /// </summary>
-    private static void EnableStartup()
-    {
-        try
-        {
-            string startupFolder = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
-            string shortcutPath = Path.Combine(startupFolder, ShortcutName);
-
-            string? exePath = Process.GetCurrentProcess().MainModule?.FileName;
-            if (string.IsNullOrEmpty(exePath))
-            {
-                Console.WriteLine(_isZh ? "無法取得當前程式路徑，設定失敗。" : "Failed to retrieve current executable path.");
-                return;
-            }
-
-            string targetDirectory = Path.GetDirectoryName(exePath) ?? "";
-
-            string powershellCommand = "$s = (New-Object -COM WScript.Shell).CreateShortcut('" + shortcutPath + "'); " +
-                                       "$s.TargetPath = '" + exePath + "'; " +
-                                       "$s.Arguments = '3'; " +
-                                       "$s.WorkingDirectory = '" + targetDirectory + "'; " +
-                                       "$s.Save()";
-
-            var psi = new ProcessStartInfo
-            {
-                FileName = "powershell",
-                Arguments = $"-NoProfile -NonInteractive -Command \"{powershellCommand}\"",
-                CreateNoWindow = true,
-                UseShellExecute = false
-            };
-
-            using var process = Process.Start(psi);
-            process?.WaitForExit();
-
-            Console.WriteLine(_isZh
-                ? "\n[成功] 已將捷徑加入開機啟動資料夾 (帶入參數 3)！"
-                : "\n[Success] Shortcut added to Windows Startup folder (with argument 3)!");
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(_isZh
-                ? $"\n[失敗] 設定開機啟動時發生錯誤: {ex.Message}"
-                : $"\n[Failed] Error enabling startup: {ex.Message}");
-        }
-    }
-
-    /// <summary>
-    /// 移除 Startup 資料夾內的捷徑
-    /// </summary>
-    private static void DisableStartup()
-    {
-        try
-        {
-            string startupFolder = Environment.GetFolderPath(Environment.SpecialFolder.Startup);
-            string shortcutPath = Path.Combine(startupFolder, ShortcutName);
-
-            if (File.Exists(shortcutPath))
-            {
-                File.Delete(shortcutPath);
-                Console.WriteLine(_isZh
-                    ? "\n[成功] 已移除開機自動啟動捷徑！"
-                    : "\n[Success] Startup shortcut removed successfully!");
-            }
-            else
-            {
-                Console.WriteLine(_isZh
-                    ? "\n[提示] 尚未設定開機自動啟動捷徑，無需移除。"
-                    : "\n[Info] No startup shortcut was found.");
-            }
-        }
-        catch (Exception ex)
-        {
-            Console.WriteLine(_isZh
-                ? $"\n[失敗] 移除捷徑時發生錯誤: {ex.Message}"
-                : $"\n[Failed] Error removing startup shortcut: {ex.Message}");
-        }
-    }
-
     // Discord 下載整個新版本可能要幾分鐘
     private static readonly TimeSpan UpdaterWaitTimeout = TimeSpan.FromMinutes(5);
 
@@ -147,6 +74,7 @@ internal class Program
 
     private sealed class UpdateContext
     {
+        public required IPlatformService Platform { get; init; }
         public required ConfigService Config { get; init; }
         public required DiscordService Discord { get; init; }
         public required BetterDiscordService Bd { get; init; }
@@ -195,9 +123,10 @@ internal class Program
         var configService = new ConfigService();
         configService.LoadSettings();
 
-        var discordService = new DiscordService();
+        var platform = PlatformService.Current;
+        var discordService = new DiscordService(platform);
         var gitHubService = new GitHubService(configService);
-        var bdService = new BetterDiscordService(configService, gitHubService);
+        var bdService = new BetterDiscordService(configService, gitHubService, platform);
         var pluginService = new PluginService();
 
         var editions = new Dictionary<DiscordEdition, string?>
@@ -217,8 +146,15 @@ internal class Program
         bool isCi = configService.Config.UseBetterDiscordCiReleases;
         var defaultPlugin = new PluginInfo("https://raw.githubusercontent.com/riolubruh/YABDP4Nitro/main/YABDP4Nitro.plugin.js");
 
+        if (isCi && !platform.CanInjectBetterDiscord)
+        {
+            // 這些平台由 BD 官方 Installer 注入，它的 loader 固定載入 betterdiscord.asar
+            Console.WriteLine($"[WARN] use_betterdiscord_ci_releases has no effect on {platform.Name}: the BetterDiscord loader installed by the official installer loads betterdiscord.asar, not betterdiscord-ci.asar.");
+        }
+
         var ctx = new UpdateContext
         {
+            Platform = platform,
             Config = configService,
             Discord = discordService,
             Bd = bdService,
@@ -261,15 +197,15 @@ internal class Program
     /// <summary>
     /// 處理完一個 Discord 版本後，確保它在該執行的時候是開著的：
     ///   - 被本工具關掉（或為了更新而開啟）的 Discord → 一定重新開啟
-    ///   - 自動模式下，Discord 有設定開機自動啟動，但更新完沒有自己開起來 → 順手開起來
+    ///   - 自動模式下，Discord 有設定開機自動啟動，但更新完沒有自己開起來 → 順手開起來（目前只有 Windows 能判斷）
     /// 有開機自動啟動設定時沿用 Discord 登錄的指令，保留「啟動時最小化」等設定。
     /// </summary>
     private static async Task EnsureDiscordRunningAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
     {
         var discord = ctx.Discord;
-        var autoStart = ctx.Unattended ? DiscordAutoStart.Find(edition) : null;
+        bool autoStart = UsesDiscordAutoStart(ctx, edition);
 
-        if (!state.Relaunch && autoStart == null) return;
+        if (!state.Relaunch && !autoStart) return;
         if (discord.IsDiscordRunning(edition)) return;
 
         if (state.Relaunch)
@@ -278,8 +214,8 @@ internal class Program
         }
         else
         {
-            // 本工具沒有動到 Discord，但它設定了開機自動啟動卻沒在執行：先給 Windows 一點時間自己開
-            Console.WriteLine($"{edition} is set to start with Windows but is not running. Waiting up to {AutoStartGracePeriod.TotalSeconds:0}s...");
+            // 本工具沒有動到 Discord，但它設定了開機自動啟動卻沒在執行：先給系統一點時間自己開
+            Console.WriteLine($"{edition} is set to start with {ctx.Platform.Name} but is not running. Waiting up to {AutoStartGracePeriod.TotalSeconds:0}s...");
             if (await discord.WaitForDiscordStartAsync(edition, AutoStartGracePeriod))
             {
                 Console.WriteLine($"{edition} started by itself.");
@@ -288,8 +224,18 @@ internal class Program
             Console.WriteLine($"{edition} did not start by itself. Starting it now...");
         }
 
-        discord.StartDiscord(edition, parentPath, autoStart);
+        StartDiscordForRun(ctx, edition, parentPath);
     }
+
+    /// <summary>自動模式（開機捷徑 / 登入項目）且 Discord 有設定開機自動啟動</summary>
+    private static bool UsesDiscordAutoStart(UpdateContext ctx, DiscordEdition edition)
+        => ctx.Unattended && ctx.Discord.IsDiscordAutoStartEnabled(edition);
+
+    /// <summary>自動模式下用 Discord 的開機指令啟動（保留「啟動時最小化」），其他情況用一般方式啟動</summary>
+    private static bool StartDiscordForRun(UpdateContext ctx, DiscordEdition edition, string parentPath)
+        => UsesDiscordAutoStart(ctx, edition)
+            ? ctx.Discord.StartDiscordLikeAutoStart(edition, parentPath)
+            : ctx.Discord.StartDiscord(edition, parentPath);
 
     private static async Task ProcessEditionAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
     {
@@ -304,32 +250,48 @@ internal class Program
             return;
         }
 
-        // 1. Discord 本體是否需要更新
-        bool? isAppUpToDate = await discord.IsDiscordUpToDateAsync(edition, parentPath);
-        if (isAppUpToDate == true)
+        // 1. Discord 本體是否需要更新（macOS 由 Discord 自己的 ShipIt 整包更新，本工具不介入）
+        if (ctx.Platform.CanManageDiscordUpdates)
         {
-            Console.WriteLine($"{edition} app version is already up to date.");
-        }
-        else if (isAppUpToDate == false && !await UpdateDiscordAsync(ctx, edition, parentPath, state))
-        {
-            return;
+            bool? isAppUpToDate = await discord.IsDiscordUpToDateAsync(edition, parentPath);
+            if (isAppUpToDate == true)
+            {
+                Console.WriteLine($"{edition} app version is already up to date.");
+            }
+            else if (isAppUpToDate == false && !await UpdateDiscordAsync(ctx, edition, parentPath, state))
+            {
+                return;
+            }
         }
 
         // 2. BetterDiscord 注入 / asar / plugin
-        string coreFolder = discord.GetLatestInstalledDiscordFolder(parentPath);
-        string fullDiscordPath = Path.Combine(parentPath, coreFolder);
-        bool isInjected = bd.IsBdInjected(fullDiscordPath, ctx.IsCi);
+        bool canInject = ctx.Platform.CanInjectBetterDiscord;
+        string hostPath = discord.GetHostPath(parentPath);
+        string hostVersion = discord.GetHostVersionLabel(parentPath);
+        bool isInjected = canInject ? bd.IsBdInjected(hostPath, ctx.IsCi) : bd.HasBdLoader(hostPath);
 
         if (isInjected && !ctx.BdNeedsDownload && !ctx.PluginNeedsUpdate)
         {
             // 已經是最新版且已注入：不打擾使用者，也不關閉 Discord
             Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
-            RememberPatchedVersion(ctx, edition, coreFolder);
+            RememberPatchedVersion(ctx, edition, hostVersion);
             return;
         }
 
-        // 要動到檔案前先關閉 Discord（結束時會自動重開）
-        await StopDiscordAsync(ctx, edition, state);
+        if (!isInjected && !canInject)
+        {
+            // 本工具在這個平台不注入（原因見 MacPlatformService 說明），只能提示使用者
+            Console.WriteLine(_isZh
+                ? $"[提示] {edition} 目前沒有載入 BetterDiscord。{ctx.Platform.Name} 上本工具不會修改 Discord 本體，請先執行一次 BetterDiscord 官方 Installer（https://betterdiscord.app）；之後 Discord 每次更新，BetterDiscord 會自己重新注入。本工具會持續把 betterdiscord.asar 與 plugin 保持在最新版。"
+                : $"[Info] BetterDiscord is not loaded in {edition}. On {ctx.Platform.Name} this tool does not modify the Discord app itself. Run the official BetterDiscord installer (https://betterdiscord.app) once; BetterDiscord then re-applies its injection after every Discord update. This tool keeps betterdiscord.asar and the plugin up to date.");
+        }
+
+        // 要動到檔案前先關閉 Discord（結束時會自動重開）。
+        // 本工具不注入、BD 也還沒注入時，Discord 根本沒有載入 asar / plugin，不需要關閉
+        if (canInject || isInjected)
+        {
+            await StopDiscordAsync(ctx, edition, state);
+        }
 
         if (ctx.BdNeedsDownload)
         {
@@ -337,12 +299,12 @@ internal class Program
             if (await bd.UpdateBdAsarOnlyAsync(ctx.IsCi)) ctx.BdNeedsDownload = false;
         }
 
-        if (!isInjected)
+        if (!isInjected && canInject)
         {
             if (bd.IsAsarValid(ctx.IsCi))
             {
                 Console.WriteLine("Applying BetterDiscord injection patch...");
-                isInjected = bd.InjectPatch(fullDiscordPath, ctx.IsCi);
+                isInjected = bd.InjectPatch(hostPath, ctx.IsCi);
             }
             else
             {
@@ -350,7 +312,7 @@ internal class Program
             }
         }
 
-        if (isInjected) RememberPatchedVersion(ctx, edition, coreFolder);
+        if (isInjected) RememberPatchedVersion(ctx, edition, hostVersion);
 
         if (ctx.PluginNeedsUpdate)
         {
@@ -373,12 +335,11 @@ internal class Program
 
         await StopDiscordAsync(ctx, edition, state);
 
-        string currentHost = Path.Combine(parentPath, discord.GetLatestInstalledDiscordFolder(parentPath));
+        string currentHost = discord.GetHostPath(parentPath);
         ctx.Bd.RevertInjectionForUpdate(currentHost);
 
         Console.WriteLine($"Starting {edition} to apply the update...");
-        var autoStart = ctx.Unattended ? DiscordAutoStart.Find(edition) : null;
-        if (!discord.StartDiscord(edition, parentPath, autoStart)) return true;
+        if (!StartDiscordForRun(ctx, edition, parentPath)) return true;
         state.Relaunch = true;
 
         if (!await discord.WaitForDiscordStartAsync(edition, TimeSpan.FromSeconds(30)))
@@ -409,11 +370,11 @@ internal class Program
         await ctx.Discord.KillDiscordAsync(edition);
     }
 
-    private static void RememberPatchedVersion(UpdateContext ctx, DiscordEdition edition, string coreFolder)
+    private static void RememberPatchedVersion(UpdateContext ctx, DiscordEdition edition, string hostVersion)
     {
-        if (ctx.Config.GetLastInstalledVersion(edition) == coreFolder) return;
+        if (ctx.Config.GetLastInstalledVersion(edition) == hostVersion) return;
 
-        ctx.Config.SetDiscordVersion(edition, coreFolder);
+        ctx.Config.SetDiscordVersion(edition, hostVersion);
         ctx.Config.SaveSettings();
     }
 
@@ -432,7 +393,8 @@ internal class Program
     {
         if (editions.Count > 0) return editions;
 
-        await discordService.DownloadAndInstallDiscordAsync();
+        // macOS 無法自動安裝（只會提示使用者手動安裝），直接結束
+        if (!await discordService.DownloadAndInstallDiscordAsync()) return null;
 
         Console.WriteLine(_isZh
             ? "\n[提示] 正在等待 Discord 完成初始化並建立安裝資料夾..."
