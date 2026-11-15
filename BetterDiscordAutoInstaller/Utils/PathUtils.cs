@@ -4,7 +4,14 @@ namespace BetterDiscordAutoInstaller.Utils;
 
 public static class PathUtils
 {
-    public const string BdaiVersion = "1.0.0";
+    // 由 csproj 在 Release 編譯時產生的版本號（Major.Minor.天數.時分）取前三段，與 GitHub release tag 對應，不需手動更新
+    public static readonly string BdaiVersion = GetBdaiVersion();
+
+    private static string GetBdaiVersion()
+    {
+        var version = typeof(PathUtils).Assembly.GetName().Version;
+        return version == null ? "0.0.0" : $"{version.Major}.{version.Minor}.{version.Build}";
+    }
     public const string SettingsFileName = "settings.json";
     public const string GitHubTokenFileName = "github_token";
 

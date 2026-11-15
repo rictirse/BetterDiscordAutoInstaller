@@ -38,6 +38,9 @@ internal class Program
 
             string? input = Console.ReadLine()?.Trim();
 
+            // 沒有可讀的輸入（stdin 已關閉）時直接結束，避免無限迴圈
+            if (input == null) return;
+
             switch (input)
             {
                 case "1":
