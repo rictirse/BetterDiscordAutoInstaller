@@ -125,7 +125,7 @@ internal class Program
 
         var platform = PlatformService.Current;
         var discordService = new DiscordService(platform);
-        var gitHubService = new GitHubService(configService);
+        var gitHubService = new GitHubService(configService, allowTokenPrompt: !unattended);
         var bdService = new BetterDiscordService(configService, gitHubService, platform);
         var pluginService = new PluginService();
 
