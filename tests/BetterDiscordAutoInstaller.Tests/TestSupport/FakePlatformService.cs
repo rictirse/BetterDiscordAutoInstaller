@@ -35,4 +35,5 @@ internal sealed class FakePlatformService(string betterDiscordFolder) : IPlatfor
     public void EnableAutostart() => throw new NotSupportedException();
     public void DisableAutostart() => throw new NotSupportedException();
     public void PrepareWorkingDirectory() => throw new NotSupportedException();
+    public string? RunLogPath => throw new NotSupportedException();
 }
