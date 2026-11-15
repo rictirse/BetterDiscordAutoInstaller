@@ -1,0 +1,2 @@
+# Keep fixtures byte-identical to what Discord writes (LF), also on Windows checkouts.
+*.log text eol=lf

@@ -1,0 +1,2 @@
+# The root .gitignore ignores *.log; these are test fixtures and must be tracked.
+!*.log
