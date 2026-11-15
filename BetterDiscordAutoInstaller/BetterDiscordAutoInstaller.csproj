@@ -7,6 +7,10 @@
 		<Nullable>enable</Nullable>
 	</PropertyGroup>
 
+	<ItemGroup>
+		<InternalsVisibleTo Include="BetterDiscordAutoInstaller.Tests" />
+	</ItemGroup>
+
 	<PropertyGroup Condition="'$(Configuration)'=='Release'">
 		<Major>1</Major>
 		<Minor>0</Minor>

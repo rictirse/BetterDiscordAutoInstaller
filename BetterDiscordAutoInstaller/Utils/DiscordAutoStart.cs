@@ -32,10 +32,8 @@ public static class DiscordAutoStart
             using var run = Registry.CurrentUser.OpenSubKey(RunKey);
             if (run?.GetValue(name) is not string command || string.IsNullOrWhiteSpace(command)) return null;
 
-            // 在「工作管理員 > 啟動應用程式」停用時 Run 的值不會被刪掉，
-            // 而是 StartupApproved 裡同名值的第一個 byte 的 bit0 會被設為 1（02 = 啟用，03 = 停用）
             using var approved = Registry.CurrentUser.OpenSubKey(StartupApprovedKey);
-            if (approved?.GetValue(name) is byte[] state && state.Length > 0 && (state[0] & 1) == 1) return null;
+            if (IsDisabled(approved?.GetValue(name) as byte[])) return null;
 
             return Parse(command);
         }
@@ -44,6 +42,13 @@ public static class DiscordAutoStart
             return null;
         }
     }
+
+    /// <summary>
+    /// 在「工作管理員 > 啟動應用程式」停用時 Run 的值不會被刪掉，
+    /// 而是 StartupApproved 裡同名值的第一個 byte 的 bit0 會被設為 1（02 = 啟用，03 = 停用）
+    /// </summary>
+    internal static bool IsDisabled(byte[]? startupApprovedState) =>
+        startupApprovedState is { Length: > 0 } && (startupApprovedState[0] & 1) == 1;
 
     /// <summary>
     /// 將登錄中的指令拆成執行檔路徑與參數
