@@ -9,6 +9,7 @@
 * **C# & .NET 10 Engine**: Native binary performance without requiring a Python environment.
 * **Auto-Setup for Missing Clients**: Automatically downloads and installs Discord if it is missing from your system.
 * **Smart Non-Intrusive Updates**: Queries Discord and BetterDiscord versions via API. If your installation is up to date, it **will not** forcibly close your running Discord client.
+* **Discord Is Always Left Running**: Any Discord client the tool had to close is relaunched afterwards. When run with a command-line argument (e.g. from the startup shortcut), if Discord is set to start with Windows (and not disabled in Task Manager) but is not running after the update, the tool starts it with Discord's own startup command, so "Start Minimized" is respected.
 * **Windows Startup Integration**: Built-in option to easily create or remove Windows startup shortcuts with automatic update arguments.
 * **Multi-Client Patching**: Automatically detects and injects `betterdiscord.asar` into Discord, Discord PTB, and Discord Canary.
 * **Bilingual Interface**: Automatically detects system locale and presents prompts in English or Traditional Chinese (`zh`).

@@ -235,6 +235,49 @@ public class DiscordService
         return false;
     }
 
+    /// <summary>
+    /// 有開機自動啟動設定時，用 Discord 登錄的同一個指令啟動，保留「啟動時最小化」等設定；
+    /// 沒有設定或指令不是指向這個安裝目錄時，改用一般方式啟動。
+    /// </summary>
+    public bool StartDiscord(DiscordEdition edition, string parentPath, DiscordAutoStartEntry? autoStart)
+    {
+        if (autoStart != null && IsInsideDirectory(autoStart.FileName, parentPath) && File.Exists(autoStart.FileName))
+        {
+            try
+            {
+                using var _ = Process.Start(new ProcessStartInfo
+                {
+                    FileName = autoStart.FileName,
+                    Arguments = autoStart.Arguments,
+                    WorkingDirectory = Path.GetDirectoryName(autoStart.FileName)!,
+                    UseShellExecute = true
+                });
+                Console.WriteLine($"Started {edition} with its Windows startup command{(autoStart.StartMinimized ? " (minimized)" : "")}.");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[WARN] Failed to run {edition} startup command: {ex.Message}");
+            }
+        }
+
+        return StartDiscord(edition, parentPath);
+    }
+
+    private static bool IsInsideDirectory(string file, string directory)
+    {
+        try
+        {
+            var fullFile = Path.GetFullPath(file);
+            var root = Path.GetFullPath(directory).TrimEnd(Path.DirectorySeparatorChar) + Path.DirectorySeparatorChar;
+            return fullFile.StartsWith(root, StringComparison.OrdinalIgnoreCase);
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
     public async Task<bool> WaitForDiscordStartAsync(DiscordEdition edition, TimeSpan timeout)
     {
         var sw = Stopwatch.StartNew();

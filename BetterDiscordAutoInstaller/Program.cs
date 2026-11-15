@@ -139,6 +139,9 @@ internal class Program
     // Discord 下載整個新版本可能要幾分鐘
     private static readonly TimeSpan UpdaterWaitTimeout = TimeSpan.FromMinutes(5);
 
+    // 開機時 Windows 啟動 Discord 可能比本工具晚幾秒，先等一下再自己開
+    private static readonly TimeSpan AutoStartGracePeriod = TimeSpan.FromSeconds(15);
+
     private sealed class UpdateContext
     {
         public required ConfigService Config { get; init; }
@@ -147,6 +150,8 @@ internal class Program
         public required PluginService Plugins { get; init; }
         public required PluginInfo Plugin { get; init; }
         public bool IsCi { get; init; }
+        /// <summary>以命令列參數執行（例如開機捷徑），不是從互動選單選的</summary>
+        public bool Unattended { get; init; }
         public bool BdNeedsDownload { get; set; }
         public bool PluginNeedsUpdate { get; set; }
     }
@@ -166,7 +171,7 @@ internal class Program
     {
         try
         {
-            await RunAutoUpdateCoreAsync();
+            await RunAutoUpdateCoreAsync(unattended: args.Length > 0);
 
             Console.WriteLine(_isZh
                 ? "\n安裝完成。3 秒後自動退出..."
@@ -182,7 +187,7 @@ internal class Program
         await Task.Delay(3000);
     }
 
-    private static async Task RunAutoUpdateCoreAsync()
+    private static async Task RunAutoUpdateCoreAsync(bool unattended)
     {
         var configService = new ConfigService();
         configService.LoadSettings();
@@ -217,6 +222,7 @@ internal class Program
             Plugins = pluginService,
             Plugin = defaultPlugin,
             IsCi = isCi,
+            Unattended = unattended,
             BdNeedsDownload = await bdService.CheckForBdUpdatesAsync(isCi),
             PluginNeedsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin)
         };
@@ -236,14 +242,50 @@ internal class Program
             }
             finally
             {
-                // 不論成功、失敗或中途例外，只要 Discord 是被本工具關掉的，就一定要開回來
-                if (state.Relaunch && !discordService.IsDiscordRunning(edition))
+                // 不論成功、失敗或中途例外，都要確保 Discord 回到該有的狀態
+                try
                 {
-                    Console.WriteLine($"Restarting {edition}...");
-                    discordService.StartDiscord(edition, parentPath!);
+                    await EnsureDiscordRunningAsync(ctx, edition, parentPath!, state);
+                }
+                catch (Exception ex)
+                {
+                    Console.WriteLine($"[ERROR] Failed to start {edition}: {ex.Message}");
                 }
             }
         }
+    }
+
+    /// <summary>
+    /// 處理完一個 Discord 版本後，確保它在該執行的時候是開著的：
+    ///   - 被本工具關掉（或為了更新而開啟）的 Discord → 一定重新開啟
+    ///   - 自動模式下，Discord 有設定開機自動啟動，但更新完沒有自己開起來 → 順手開起來
+    /// 有開機自動啟動設定時沿用 Discord 登錄的指令，保留「啟動時最小化」等設定。
+    /// </summary>
+    private static async Task EnsureDiscordRunningAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
+    {
+        var discord = ctx.Discord;
+        var autoStart = ctx.Unattended ? DiscordAutoStart.Find(edition) : null;
+
+        if (!state.Relaunch && autoStart == null) return;
+        if (discord.IsDiscordRunning(edition)) return;
+
+        if (state.Relaunch)
+        {
+            Console.WriteLine($"Restarting {edition}...");
+        }
+        else
+        {
+            // 本工具沒有動到 Discord，但它設定了開機自動啟動卻沒在執行：先給 Windows 一點時間自己開
+            Console.WriteLine($"{edition} is set to start with Windows but is not running. Waiting up to {AutoStartGracePeriod.TotalSeconds:0}s...");
+            if (await discord.WaitForDiscordStartAsync(edition, AutoStartGracePeriod))
+            {
+                Console.WriteLine($"{edition} started by itself.");
+                return;
+            }
+            Console.WriteLine($"{edition} did not start by itself. Starting it now...");
+        }
+
+        discord.StartDiscord(edition, parentPath, autoStart);
     }
 
     private static async Task ProcessEditionAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
@@ -332,7 +374,8 @@ internal class Program
         ctx.Bd.RevertInjectionForUpdate(currentHost);
 
         Console.WriteLine($"Starting {edition} to apply the update...");
-        if (!discord.StartDiscord(edition, parentPath)) return true;
+        var autoStart = ctx.Unattended ? DiscordAutoStart.Find(edition) : null;
+        if (!discord.StartDiscord(edition, parentPath, autoStart)) return true;
         state.Relaunch = true;
 
         if (!await discord.WaitForDiscordStartAsync(edition, TimeSpan.FromSeconds(30)))
