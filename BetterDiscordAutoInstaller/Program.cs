@@ -136,12 +136,53 @@ internal class Program
         }
     }
 
+    // Discord 下載整個新版本可能要幾分鐘
+    private static readonly TimeSpan UpdaterWaitTimeout = TimeSpan.FromMinutes(5);
+
+    private sealed class UpdateContext
+    {
+        public required ConfigService Config { get; init; }
+        public required DiscordService Discord { get; init; }
+        public required BetterDiscordService Bd { get; init; }
+        public required PluginService Plugins { get; init; }
+        public required PluginInfo Plugin { get; init; }
+        public bool IsCi { get; init; }
+        public bool BdNeedsDownload { get; set; }
+        public bool PluginNeedsUpdate { get; set; }
+    }
+
+    private sealed class EditionState
+    {
+        /// <summary>這次執行中由本工具關掉（或為了更新而開啟）Discord，結束時要確保它在執行</summary>
+        public bool Relaunch { get; set; }
+    }
+
     /// <summary>
     /// BetterDiscord 自動更新邏輯
     /// </summary>
     /// <param name="args"></param>
     /// <returns></returns>
     private static async Task RunAutoUpdateAsync(string[] args)
+    {
+        try
+        {
+            await RunAutoUpdateCoreAsync();
+
+            Console.WriteLine(_isZh
+                ? "\n安裝完成。3 秒後自動退出..."
+                : "\nInstallation complete. Exiting in 3 seconds...");
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine(_isZh
+                ? $"\n[錯誤] 自動更新時發生未預期的錯誤: {ex.Message}\n3 秒後自動退出..."
+                : $"\n[Error] Unexpected error during auto-update: {ex.Message}\nExiting in 3 seconds...");
+        }
+
+        await Task.Delay(3000);
+    }
+
+    private static async Task RunAutoUpdateCoreAsync()
     {
         var configService = new ConfigService();
         configService.LoadSettings();
@@ -162,137 +203,172 @@ internal class Program
         .ToDictionary();
 
         // 檢查並確保 Discord 已安裝 (若失敗則直接退出)
-        var _editions = await EnsureDiscordInstalledAsync(editions, configService, discordService);
-        if (editions == null)
-        {
-            await Task.Delay(3000);
-            return;
-        }
-        else
-        {
-            editions = _editions!;
-        }
+        var installedEditions = await EnsureDiscordInstalledAsync(editions, configService, discordService);
+        if (installedEditions == null) return;
 
         bool isCi = configService.Config.UseBetterDiscordCiReleases;
-        bool bdHasUpdates = await bdService.CheckForBdUpdatesAsync(isCi);
+        var defaultPlugin = new PluginInfo("https://raw.githubusercontent.com/riolubruh/YABDP4Nitro/main/YABDP4Nitro.plugin.js");
 
-        foreach (var (edition, parentPath) in editions)
+        var ctx = new UpdateContext
+        {
+            Config = configService,
+            Discord = discordService,
+            Bd = bdService,
+            Plugins = pluginService,
+            Plugin = defaultPlugin,
+            IsCi = isCi,
+            BdNeedsDownload = await bdService.CheckForBdUpdatesAsync(isCi),
+            PluginNeedsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin)
+        };
+
+        foreach (var (edition, parentPath) in installedEditions)
         {
             Console.WriteLine($"\nProcessing {edition} installation: {parentPath!}");
-            bool ifDiscordRunning = discordService.IsDiscordRunning(edition);
+            var state = new EditionState();
 
-            // 1. 先用 API 檢查本地版本是否已是官方最新版本
-            bool isAppUpToDate = await discordService.IsDiscordUpToDateAsync(edition, parentPath!);
-
-            // 2. 如果不是最新版，且 Discord 目前沒在執行，才喚起 Updater 更新
-            if (!isAppUpToDate && !ifDiscordRunning)
+            try
             {
-                Console.WriteLine($"{edition} is outdated. Starting updater...");
-                discordService.StartDiscord(edition, parentPath!);
-                await Task.Delay(1000);
-
-                while (discordService.IsDiscordUpdating(edition))
+                await ProcessEditionAsync(ctx, edition, parentPath!, state);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[ERROR] Failed to process {edition}: {ex.Message}");
+            }
+            finally
+            {
+                // 不論成功、失敗或中途例外，只要 Discord 是被本工具關掉的，就一定要開回來
+                if (state.Relaunch && !discordService.IsDiscordRunning(edition))
                 {
-                    await Task.Delay(500);
+                    Console.WriteLine($"Restarting {edition}...");
+                    discordService.StartDiscord(edition, parentPath!);
                 }
             }
-            else if (isAppUpToDate)
+        }
+    }
+
+    private static async Task ProcessEditionAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
+    {
+        var discord = ctx.Discord;
+        var bd = ctx.Bd;
+
+        // 0. Discord 已在執行（例如開機時被 Windows 自動啟動）：先等它內建的 updater 跑完，避免更新到一半被砍掉
+        if (discord.IsDiscordRunning(edition) &&
+            !await discord.WaitForUpdaterIdleAsync(edition, parentPath, UpdaterWaitTimeout))
+        {
+            Console.WriteLine($"[WARN] {edition} is still updating. Leaving it alone this time to avoid breaking the update.");
+            return;
+        }
+
+        // 1. Discord 本體是否需要更新
+        bool? isAppUpToDate = await discord.IsDiscordUpToDateAsync(edition, parentPath);
+        if (isAppUpToDate == true)
+        {
+            Console.WriteLine($"{edition} app version is already up to date.");
+        }
+        else if (isAppUpToDate == false && !await UpdateDiscordAsync(ctx, edition, parentPath, state))
+        {
+            return;
+        }
+
+        // 2. BetterDiscord 注入 / asar / plugin
+        string coreFolder = discord.GetLatestInstalledDiscordFolder(parentPath);
+        string fullDiscordPath = Path.Combine(parentPath, coreFolder);
+        bool isInjected = bd.IsBdInjected(fullDiscordPath, ctx.IsCi);
+
+        if (isInjected && !ctx.BdNeedsDownload && !ctx.PluginNeedsUpdate)
+        {
+            // 已經是最新版且已注入：不打擾使用者，也不關閉 Discord
+            Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
+            RememberPatchedVersion(ctx, edition, coreFolder);
+            return;
+        }
+
+        // 要動到檔案前先關閉 Discord（結束時會自動重開）
+        await StopDiscordAsync(ctx, edition, state);
+
+        if (ctx.BdNeedsDownload)
+        {
+            Console.WriteLine("Updating BetterDiscord asar...");
+            if (await bd.UpdateBdAsarOnlyAsync(ctx.IsCi)) ctx.BdNeedsDownload = false;
+        }
+
+        if (!isInjected)
+        {
+            if (bd.IsAsarValid(ctx.IsCi))
             {
-                Console.WriteLine($"{edition} app version is already up to date.");
-            }
-
-            string coreFolder = discordService.GetLatestInstalledDiscordFolder(parentPath!);
-            string fullDiscordPath = Path.Combine(parentPath!, coreFolder);
-
-            bool isLastPatchUpToDate = coreFolder == configService.GetLastInstalledVersion(edition);
-            bool isInjected = bdService.IsBdInjected(fullDiscordPath, isCi);
-
-            if (!isLastPatchUpToDate || !isInjected || bdHasUpdates)
-            {
-                Console.WriteLine($"\nKilling any running {edition} processes...");
-                discordService.KillDiscord(edition);
-                await Task.Delay(1500);
-                ifDiscordRunning = false;
-
-                if (!isLastPatchUpToDate)
-                {
-                    configService.SetDiscordVersion(edition, coreFolder);
-                    configService.SaveSettings();
-                    isInjected = false;
-                }
-
-                bool bdAsarExists = File.Exists(PathUtils.BdAsarPath);
-
-                if (bdHasUpdates || !bdAsarExists)
-                {
-                    Console.WriteLine(bdAsarExists
-                        ? "Updating BetterDiscord asar..."
-                        : "BetterDiscord core file missing. Downloading betterdiscord.asar...");
-
-                    await bdService.UpdateBdAsarOnlyAsync(isCi);
-                    bdHasUpdates = false;
-
-                    bdAsarExists = File.Exists(PathUtils.BdAsarPath);
-                }
-
-                if (!isInjected)
-                {
-                    if (bdAsarExists)
-                    {
-                        Console.WriteLine($"Applying BetterDiscord injection patch...");
-                        bdService.InjectPatch(fullDiscordPath, isCi);
-                    }
-                    else
-                    {
-                        Console.WriteLine($"[Error] Cannot apply BetterDiscord injection patch: betterdiscord.asar is missing!");
-                    }
-                }
-            }
-            else
-            {
-                Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
-            }
-
-            // 1. 將 Plugin 初始化與版本檢查抽到最前面
-            var defaultPlugin = new PluginInfo("https://raw.githubusercontent.com/riolubruh/YABDP4Nitro/main/YABDP4Nitro.plugin.js");
-
-            // 檢查本地是否缺少套件或是需要更新
-            bool needsUpdate = await pluginService.CheckNeedsUpdateAsync(defaultPlugin);
-
-            // 需要更新
-            if (needsUpdate)
-            {
-                // Discord 目前正在執行中
-                if (ifDiscordRunning)
-                { 
-                    // 1. 先關閉 Discord，避免檔案鎖定或無效寫入
-                    Console.WriteLine($"[INFO] Plugin update detected for {defaultPlugin.Name}. Closing Discord to apply update...");
-                    discordService.KillDiscord(edition);
-                }
-                else
-                {
-                    Console.WriteLine($"[INFO] Plugin update detected for {defaultPlugin.Name}. Closing Discord to apply update...");
-                }
-
-                // 2. 下載 / 更新套件
-                await pluginService.DownloadPluginAsync(defaultPlugin);
-
-                // 3. 更新完後重啟 Discord
-                Console.WriteLine($"Restarting {edition}...");
-                discordService.StartDiscord(edition, parentPath!);
+                Console.WriteLine("Applying BetterDiscord injection patch...");
+                isInjected = bd.InjectPatch(fullDiscordPath, ctx.IsCi);
             }
             else
             {
-                // 已經是最新版，且 Discord 本來就在運作，直接跳過、不打擾使用者
-                Console.WriteLine($"BetterDiscord ({edition}) is up to date and injected.");
-                return;
+                Console.WriteLine("[Error] Cannot apply BetterDiscord injection patch: BetterDiscord asar is missing or corrupted!");
             }
         }
 
-        Console.WriteLine(_isZh
-            ? "\n安裝完成。3 秒後自動退出..."
-            : "\nInstallation complete. Exiting in 3 seconds...");
-        await Task.Delay(3000);
+        if (isInjected) RememberPatchedVersion(ctx, edition, coreFolder);
+
+        if (ctx.PluginNeedsUpdate)
+        {
+            Console.WriteLine($"[INFO] Plugin update detected for {ctx.Plugin.Name}.");
+            await ctx.Plugins.DownloadPluginAsync(ctx.Plugin);
+            ctx.PluginNeedsUpdate = false;
+        }
+    }
+
+    /// <summary>
+    /// Discord 有新版本時，由本工具主導更新：
+    /// 先把 BetterDiscord 的注入還原成原廠檔案，否則 Discord 的 delta 更新會因 hash 驗證失敗
+    /// （PatchFailed / NotFound），然後才啟動 Discord 讓它更新。
+    /// 回傳 false 表示 Discord 仍在更新中，這次先不要動它。
+    /// </summary>
+    private static async Task<bool> UpdateDiscordAsync(UpdateContext ctx, DiscordEdition edition, string parentPath, EditionState state)
+    {
+        var discord = ctx.Discord;
+        Console.WriteLine($"{edition} is outdated. Preparing Discord's updater...");
+
+        await StopDiscordAsync(ctx, edition, state);
+
+        string currentHost = Path.Combine(parentPath, discord.GetLatestInstalledDiscordFolder(parentPath));
+        ctx.Bd.RevertInjectionForUpdate(currentHost);
+
+        Console.WriteLine($"Starting {edition} to apply the update...");
+        if (!discord.StartDiscord(edition, parentPath)) return true;
+        state.Relaunch = true;
+
+        if (!await discord.WaitForDiscordStartAsync(edition, TimeSpan.FromSeconds(30)))
+        {
+            Console.WriteLine($"[WARN] {edition} did not start within 30s.");
+        }
+
+        if (!await discord.WaitForUpdaterIdleAsync(edition, parentPath, UpdaterWaitTimeout))
+        {
+            Console.WriteLine($"[WARN] {edition} is still updating. BetterDiscord will be injected on the next run.");
+            return false;
+        }
+
+        if (await discord.IsDiscordUpToDateAsync(edition, parentPath) == false)
+        {
+            Console.WriteLine($"[WARN] {edition} update did not complete. Discord will retry by itself; re-applying BetterDiscord for now.");
+        }
+
+        return true;
+    }
+
+    private static async Task StopDiscordAsync(UpdateContext ctx, DiscordEdition edition, EditionState state)
+    {
+        if (!ctx.Discord.IsDiscordRunning(edition)) return;
+
+        Console.WriteLine($"\nClosing {edition}...");
+        state.Relaunch = true;
+        await ctx.Discord.KillDiscordAsync(edition);
+    }
+
+    private static void RememberPatchedVersion(UpdateContext ctx, DiscordEdition edition, string coreFolder)
+    {
+        if (ctx.Config.GetLastInstalledVersion(edition) == coreFolder) return;
+
+        ctx.Config.SetDiscordVersion(edition, coreFolder);
+        ctx.Config.SaveSettings();
     }
 
     /// <summary>

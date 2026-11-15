@@ -1,7 +1,9 @@
 ﻿using BetterDiscordAutoInstaller.Helper;
 using BetterDiscordAutoInstaller.Models;
+using BetterDiscordAutoInstaller.Utils;
 using System.Net;
 using System.Net.Sockets;
+using System.Text;
 
 namespace BetterDiscordAutoInstaller.Services;
 
@@ -104,10 +106,18 @@ public class PluginService
             using var response = await HttpClient.GetAsync(plugin.Url, HttpCompletionOption.ResponseHeadersRead, cts.Token);
             response.EnsureSuccessStatusCode();
 
-            await using var contentStream = await response.Content.ReadAsStreamAsync(cts.Token);
-            await using var fileStream = new FileStream(plugin.SavePath, FileMode.Create, FileAccess.Write, FileShare.None, 8192, true);
+            var bytes = await response.Content.ReadAsByteArrayAsync(cts.Token);
 
-            await contentStream.CopyToAsync(fileStream, cts.Token);
+            // 確認下載內容是完整的 plugin（有 @version 標頭）才取代，避免寫入半個檔案後
+            // 本地版本號仍可解析、被誤判為「已是最新版」而永遠修不好
+            var header = Encoding.UTF8.GetString(bytes, 0, Math.Min(bytes.Length, 8192));
+            if (PluginHeaderParser.ExtractVersion(header) == null)
+            {
+                Console.WriteLine($"[ERROR] Downloaded plugin {plugin.Name} has no @version header. Keeping the existing file.");
+                return;
+            }
+
+            await FileUtils.ReplaceFileAsync(plugin.SavePath, bytes);
 
             string? installedVer = plugin.GetInstalledVersion();
             Console.WriteLine($"[INFO] Plugin {plugin.Name} successfully installed. (Version: {installedVer ?? "Unknown"})");
@@ -167,11 +177,11 @@ public class PluginService
         string? localVersionStr = plugin.GetInstalledVersion();
         string? remoteVersionStr = await FetchRemotePluginVersionAsync(plugin.Url);
 
-        if (string.IsNullOrEmpty(localVersionStr) || string.IsNullOrEmpty(remoteVersionStr))
-        {
-            // 若無法抓到版本，預設允許更新/覆蓋
-            return true;
-        }
+        // 本地檔案沒有版本資訊（可能損毀）→ 重新下載
+        if (string.IsNullOrEmpty(localVersionStr)) return true;
+
+        // 無法取得線上版本（例如開機時網路還沒好）→ 這次先不更新，避免為了一個不確定的更新把 Discord 關掉
+        if (string.IsNullOrEmpty(remoteVersionStr)) return false;
 
         if (Version.TryParse(localVersionStr, out var localVer) &&
             Version.TryParse(remoteVersionStr, out var remoteVer))

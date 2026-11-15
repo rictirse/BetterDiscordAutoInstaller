@@ -55,7 +55,7 @@ public class GitHubService
         return false;
     }
 
-    public async Task DownloadLatestCiAsarAsync()
+    public async Task<bool> DownloadLatestCiAsarAsync()
     {
         EnsureHeaders();
         var url = $"https://api.github.com/repos/BetterDiscord/BetterDiscord/actions/workflows/ci.yml/runs?per_page={_configService.Config.WorkflowRunsLimit}";
@@ -63,27 +63,40 @@ public class GitHubService
         var res = JsonSerializer.Deserialize<GitHubWorkflowRunResponse>(json);
 
         var latestRun = res?.WorkflowRuns?.FirstOrDefault(r => r.Name == "BetterDiscord CI" && r.Conclusion == "success");
-        if (latestRun == null) return;
+        if (latestRun == null) return false;
 
         var artUrl = $"https://api.github.com/repos/BetterDiscord/BetterDiscord/actions/runs/{latestRun.Id}/artifacts";
         var artJson = await _http.GetStringAsync(artUrl);
         var artRes = JsonSerializer.Deserialize<GitHubArtifactsResponse>(artJson);
 
         var artifact = artRes?.Artifacts?.FirstOrDefault(a => a.Name?.Equals("artifact", StringComparison.OrdinalIgnoreCase) == true);
-        if (artifact?.ArchiveDownloadUrl == null) return;
+        if (artifact?.ArchiveDownloadUrl == null) return false;
 
         var zipBytes = await _http.GetByteArrayAsync(artifact.ArchiveDownloadUrl);
         using var ms = new MemoryStream(zipBytes);
         using var archive = new ZipArchive(ms);
 
         var asarEntry = archive.Entries.FirstOrDefault(e => e.Name.EndsWith(".asar"));
-        if (asarEntry != null)
+        if (asarEntry == null) return false;
+
+        using var asarBuffer = new MemoryStream();
+        await using (var entryStream = asarEntry.Open())
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(PathUtils.BdCiAsarPath)!);
-            asarEntry.ExtractToFile(PathUtils.BdCiAsarPath, overwrite: true);
-            _configService.Config.LastInstalledBetterDiscordCiVersion = latestRun.Id;
-            _configService.SaveSettings();
-            Console.WriteLine("[INFO] BetterDiscord CI asar updated successfully.");
+            await entryStream.CopyToAsync(asarBuffer);
         }
+
+        var asarBytes = asarBuffer.ToArray();
+        if (AsarArchive.TryComputeFileHashes(asarBytes) == null)
+        {
+            Console.WriteLine("[ERROR] Downloaded BetterDiscord CI asar is invalid. Keeping the existing file.");
+            return false;
+        }
+
+        // 先完整寫入暫存檔再取代，避免留下半個 asar
+        await FileUtils.ReplaceFileAsync(PathUtils.BdCiAsarPath, asarBytes);
+        _configService.Config.LastInstalledBetterDiscordCiVersion = latestRun.Id;
+        _configService.SaveSettings();
+        Console.WriteLine("[INFO] BetterDiscord CI asar updated successfully.");
+        return true;
     }
 }
